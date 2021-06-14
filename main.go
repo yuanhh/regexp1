@@ -48,9 +48,9 @@ func re2post(re string) string {
 		case '(':
 			var (
 				s string
-				n int
+				n = 1
 			)
-			for n = 1;; {
+			for {
 				r, _, err := rd.ReadRune()
 				if err != nil {
 					panic("paren")
@@ -181,7 +181,7 @@ func post2nfa(postfix string) *state {
 // matching
 type list []*state
 
-var listid = 1
+var listid int
 
 func (l *list) addstate(s *state) {
 	if s == nil || s.index == listid {
