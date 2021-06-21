@@ -1,4 +1,4 @@
-package regexp1
+package regexp2
 
 import (
 	"strings"
@@ -87,30 +87,27 @@ func re2post(re string) string {
 	return buf.String()
 }
 
-// compiling
-type stateType int
-
 const (
-	matchState stateType = iota
-	splitState
-	literState
+	Char = iota
+	Match
+	Jmp
+	Split
 )
 
-type state struct {
-	char      rune
-	out, out1 *state
-	typ       stateType
-	index     int
+// compiling
+type inst struct {
+	char   rune
+	opcode int
+	x, y   *inst
+	tid    int
 }
-
-var matchstate = &state{0, nil, nil, matchState, 0}
 
 type frag struct {
-	start *state
-	olist []**state
+	start *inst
+	olist []**inst
 }
 
-func (f *frag) patch(s *state) {
+func (f *frag) patch(s *inst) {
 	for _, o := range f.olist {
 		*o = s
 	}
@@ -128,7 +125,11 @@ func (t *stack) push(f *frag) {
 	*t = append(*t, f)
 }
 
-func post2nfa(postfix string) *state {
+type prog struct {
+	start *inst
+}
+
+func post2nfa(postfix string) prog {
 	var (
 		rd = strings.NewReader(postfix)
 		sp stack
@@ -140,8 +141,8 @@ func post2nfa(postfix string) *state {
 		}
 		switch r {
 		default:
-			s := &state{r, nil, nil, literState, 0}
-			sp.push(&frag{s, []**state{&s.out}})
+			s := &inst{r, Char, nil, nil, 0}
+			sp.push(&frag{s, []**inst{&s.x}})
 		case '.':
 			e2 := sp.pop()
 			e1 := sp.pop()
@@ -150,84 +151,91 @@ func post2nfa(postfix string) *state {
 		case '|':
 			e2 := sp.pop()
 			e1 := sp.pop()
-			s := &state{0, e1.start, e2.start, splitState, 0}
+			s := &inst{0, Split, e1.start, e2.start, 0}
 			sp.push(&frag{s, append(e1.olist, e2.olist...)})
 		case '+':
 			e := sp.pop()
-			s := &state{0, e.start, nil, splitState, 0}
+			s := &inst{0, Split, e.start, nil, 0}
 			e.patch(s)
-			sp.push(&frag{e.start, []**state{&s.out1}})
+			sp.push(&frag{e.start, []**inst{&s.y}})
 		case '*':
 			e := sp.pop()
-			s := &state{0, e.start, nil, splitState, 0}
+			s := &inst{0, Split, e.start, nil, 0}
 			e.patch(s)
-			sp.push(&frag{s, []**state{&s.out1}})
+			sp.push(&frag{s, []**inst{&s.y}})
 		case '?':
 			e := sp.pop()
-			s := &state{0, e.start, nil, splitState, 0}
-			sp.push(&frag{e.start, append(e.olist, &s.out1)})
+			s := &inst{0, Split, e.start, nil, 0}
+			sp.push(&frag{e.start, append(e.olist, &s.y)})
 		}
 	}
 
 	e := sp.pop()
 	if len(sp) != 0 {
-		return nil
+                panic("bug")
 	}
-	e.patch(matchstate)
-	return e.start
+	e.patch(&inst{0, Match, nil, nil, 0})
+	return prog{e.start}
 }
 
 // matching
-type list []*state
+type thread struct {
+	pc *inst
+}
 
-var listid int
+type threads []thread
 
-func (l *list) addstate(s *state) {
-	if s == nil || s.index == listid {
+func (ts *threads) add(t thread, tid int) {
+	if t.pc.tid == tid {
 		return
 	}
-	s.index = listid
-	if s.typ == splitState {
-		l.addstate(s.out)
-		l.addstate(s.out1)
-		return
+
+	t.pc.tid = tid
+	*ts = append(*ts, t)
+
+	switch t.pc.opcode {
+	case Jmp:
+		ts.add(thread{t.pc.x}, tid)
+	case Split:
+		ts.add(thread{t.pc.x}, tid)
+		ts.add(thread{t.pc.y}, tid)
 	}
-	*l = append(*l, s)
 	return
 }
 
-func ismatch(l list) bool {
-	for _, e := range l {
-		if e.typ == matchState {
-			return true
+var tid int
+
+func execute(p prog, input string) bool {
+	var (
+		clist, nlist *threads
+		pc           *inst
+	)
+
+	tid++
+	clist = new(threads)
+	nlist = new(threads)
+	clist.add(thread{p.start}, tid)
+
+	rd := strings.NewReader(input)
+	for {
+		r, _, err := rd.ReadRune()
+		tid++
+		for i := range *clist {
+			pc = (*clist)[i].pc
+			switch pc.opcode {
+			case Char:
+				if pc.char == r {
+					nlist.add(thread{pc.x}, tid)
+				}
+			case Match:
+				return true
+			}
+		}
+		clist, nlist = nlist, clist
+		*nlist = (*nlist)[:0]
+		if err != nil {
+			break
 		}
 	}
 	return false
-}
-
-func step(clist, nlist *list, c rune) {
-	listid++
-	*nlist = (*nlist)[:0]
-	for _, s := range *clist {
-		if s.char == c {
-			nlist.addstate(s.out)
-		}
-	}
-}
-
-func match(start *state, input string) bool {
-	rd := strings.NewReader(input)
-	l1 := new(list)
-	l2 := new(list)
-	listid++
-	l1.addstate(start)
-
-	for clist, nlist := l1, l2; ; clist, nlist = nlist, clist {
-		r, _, err := rd.ReadRune()
-		if err != nil {
-			return ismatch(*clist)
-		}
-		step(clist, nlist, r)
-	}
-	panic("unreachable")
 }
